@@ -5,11 +5,11 @@ Message = namedtuple('Message', ('type', 'window_handle', 'event_info'))
 QUIT = 'quit'
 NOOP = 'noop'
 
-def noop(window_info):
-    return Message(type=NOOP, window_handle=window_handle, event_info=None)
+def noop(window_handle):
+    return Message(type=NOOP, window_info=window_info, event_info=None)
 
 def quit():
-    return Message(type=QUIT, window_handle=None, event_info=None)
+    return Message(type=QUIT, window_info=None, event_info=None)
 
 def is_quit(msg):
     return msg.type == QUIT
