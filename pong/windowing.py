@@ -30,7 +30,7 @@ def display():
 
         return DEFAULT_DISPLAY
 
-def get_win_info(handle):
+    def get_win_info(handle):
     """
     We assume that handle is a HWND on Windows, and an X11 Xid otherwise
     (sorry, Wayland). Since these are gathered via Python's multiprocessing
@@ -59,22 +59,20 @@ def get_win_info(handle):
         except (Xlib.error.BadDrawable, Xlib.error.BadWindow):
             return None
 
-def set_position(handle, pos):
+def set_translation(handle, pos):
     if is_windows():
         raise NotImplemented()
     else:
         try:
             win = display().create_resource_object('window', handle)
 
-            # HACK: reparenting window managers bone position management
-            #       something fierce - what's the "right" way to do this?
-            geo = win.query_tree().parent.query_tree().parent.get_geometry()
+            x, y = pos
 
-            return WindowInfo(
-                x=geo.x,
-                y=geo.y,
-                width=geo.width,
-                height=geo.height,
+            win.query_tree().parent.query_tree().parent.configure(
+                x=x,
+                y=y,
             )
         except (Xlib.error.BadDrawable, Xlib.error.BadWindow):
-            return None
+            # TODO: If the request fails, do we care? The program will be torn
+            #       down anyway.
+            pass

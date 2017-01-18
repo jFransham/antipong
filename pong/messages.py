@@ -1,15 +1,15 @@
 from collections import namedtuple
 
-Message = namedtuple('Message', ('type', 'window_handle', 'event_info'))
+Message = namedtuple('Message', ('type', 'info'))
 
 QUIT = 'quit'
-NOOP = 'noop'
+ACTION = 'action'
 
-def noop(window_handle):
-    return Message(type=NOOP, window_info=window_info, event_info=None)
+def action(info):
+    return Message(type=ACTION, info=info)
 
 def quit():
-    return Message(type=QUIT, window_info=None, event_info=None)
+    return Message(type=QUIT, info=None)
 
 def is_quit(msg):
-    return msg.type == QUIT
+    return isinstance(msg, Message) and msg.type == QUIT
