@@ -8,6 +8,19 @@ def contains(inner, outer):
         p_y <= y + h
     )
 
+
+def any_contains(inner, outers):
+    return any(
+        filter(
+            lambda rec: contains(
+                inner=inner,
+                outer=rec,
+            ),
+            outers
+        )
+    )
+
+
 def intersects(a_rect, b_rect):
     a_l = a_rect[0]
     a_r = a_rect[0] + a_rect[2]

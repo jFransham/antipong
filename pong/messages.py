@@ -19,32 +19,42 @@ FREEZE = 'freeze'
 UNFREEZE = 'unfreeze'
 CLIENT_STATE = 'client_state'
 
+
 def client_state(info):
     return Message(type=CLIENT_STATE, info=info)
+
 
 def render(info):
     return Message(type=RENDER, info=info)
 
+
 def freeze():
     return Message(type=FREEZE, info=None)
+
 
 def unfreeze():
     return Message(type=UNFREEZE, info=None)
 
+
 def quit():
     return Message(type=QUIT, info=None)
+
 
 def is_quit(msg):
     return isinstance(msg, Message) and msg.type == QUIT
 
+
 def is_render(msg):
     return isinstance(msg, Message) and msg.type == RENDER
+
 
 def is_freeze(msg):
     return isinstance(msg, Message) and msg.type == FREEZE
 
+
 def is_unfreeze(msg):
     return isinstance(msg, Message) and msg.type == UNFREEZE
+
 
 def is_client_state(msg):
     return isinstance(msg, Message) and msg.type == CLIENT_STATE

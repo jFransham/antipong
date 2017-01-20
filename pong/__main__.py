@@ -7,11 +7,20 @@ from __future__ import absolute_import
 import time
 import pygame
 
-from . import messages, windowing, game, render, physics
+from . import messages, game, render, physics
 
 from itertools import repeat
 from multiprocessing import Process, Pipe
-from collections import namedtuple
+
+FRAME_LENGTH = 0.05
+INITIAL_BALL_SPEED = 100
+BALL_RADIUS = 10
+PADDLE_HEIGHT = 100
+PADDLE_WIDTH = 30
+HALF_PADDLE_HEIGHT = PADDLE_HEIGHT // 2
+PADDLE_X = 50
+PADDLE_SIZE = PADDLE_WIDTH, PADDLE_HEIGHT
+
 
 def game_window(*args, **kwargs):
     my_conn, child_conn = Pipe()
@@ -23,39 +32,54 @@ def game_window(*args, **kwargs):
 
     return (my_conn, proc)
 
+
 # TODO: This craps out if I try to open a window in another thread, what
 #       happens if I open a window in this thread _first_?
 def get_width_height():
+    pygame.display.set_mode()
     info = pygame.display.Info()
     out = info.current_w, info.current_h
-    del info
+    pygame.display.quit()
     return out
 
-def main():
-    # TODO: Yeah.
-    window_size = 1600, 900
-    ball_pos = 800, 450
-    frame_length = 0.05
-    ball_dir = 1, 1
-    ball_speed = 100
-    ball_radius = 10
-    paddle_height = 100
-    paddle_width = 30
-    half_paddle_height = paddle_height // 2
-    paddle_x = 50
 
-    pad_size = paddle_width, paddle_height
+def mk_renderables(ball_pos, score, highscore, display_size):
+    return [
+        render.Circle(ball_pos, BALL_RADIUS),
+        render.Rectangle(
+            (
+                PADDLE_X,
+                ball_pos[1] - HALF_PADDLE_HEIGHT,
+            ),
+            PADDLE_SIZE,
+        ),
+        render.Rectangle(
+            (
+                display_size[0] - PADDLE_X - PADDLE_WIDTH,
+                ball_pos[1] - HALF_PADDLE_HEIGHT,
+            ),
+            PADDLE_SIZE,
+        ),
+        render.Text(
+            (0, 0),
+            "SCORE: {}".format(score),
+        ),
+        render.Text(
+            (0, 20),
+            "HIGH: {}".format(highscore),
+        ),
+    ]
 
-    pad_window_size = paddle_width * 3, window_size[1]
 
-    windows = [
+def mk_windows(display_size, pad_window_size):
+    return [
         game_window(
             position=(0, 0),
             size=pad_window_size,
             pinned=True,
         ),
         game_window(
-            position=(window_size[0] - pad_window_size[0], 0),
+            position=(display_size[0] - pad_window_size[0], 0),
             size=pad_window_size,
             pinned=True,
         ),
@@ -66,85 +90,120 @@ def main():
         game_window(),
     ]
 
+
+def update_ball(pos, speed, direction):
+    return (
+        pos[0] + speed * FRAME_LENGTH * direction[0],
+        pos[1] + speed * FRAME_LENGTH * direction[1],
+    )
+
+
+# TODO: Should this call `mk_renderables` instead of taking it as an argument?
+def update_windows(windows, window_infos, renderables, ball_pos):
+    for (infos, (g, _)) in zip(window_infos, windows):
+        if infos is not None and physics.contains(
+            inner=ball_pos,
+            outer=(infos.x, infos.y, infos.width, infos.height),
+        ):
+            to_send = [messages.freeze()]
+        else:
+            to_send = [messages.unfreeze()]
+
+        to_send.append(messages.render(renderables))
+
+        g.send(to_send)
+
+
+def play_area(display_size):
+    return (
+        PADDLE_X + PADDLE_WIDTH + BALL_RADIUS,
+        BALL_RADIUS,
+        display_size[0] - (PADDLE_X + PADDLE_WIDTH + BALL_RADIUS) * 2,
+        display_size[1] - 20 - BALL_RADIUS * 2,
+    )
+
+
+def handle_ball_physics(position, direction, play_area):
+    inc_score = False
+    out_dir = None
+
+    if position[0] < play_area[0]:
+        # Bounced off the left: `score` + 1
+        inc_score = True
+        out_dir = (1, direction[1])
+    elif position[0] > play_area[0] + play_area[2]:
+        # Bounced off the right: `score` + 1
+        inc_score = True
+        out_dir = (-1, direction[1])
+    elif position[1] < play_area[1]:
+        out_dir = (direction[0], 1)
+    elif position[1] > play_area[1] + play_area[3]:
+        out_dir = (direction[0], -1)
+    else:
+        out_dir = direction
+
+    return out_dir, inc_score
+
+
+def run_game(highscore):
+    display_size = get_width_height()
+    ball_pos = display_size[0] // 2, display_size[1] // 2
+    ball_dir = 1, 1
+    pad_window_size = PADDLE_WIDTH * 3, display_size[1]
+
+    windows = mk_windows(display_size, pad_window_size)
+
     window_infos = list(repeat(None, len(windows)))
 
     # Instead of recalculating the borders offset with the ball radius, just
     # calculate them once here. A ball of radius R bouncing off a rectangle of
     # size (W, H) is equivalent to an infintesimally small ball bouncing off a
     # rectangle of size (W - 2R, H - 2R) anyway.
-    ball_area_rect = (
-        paddle_x + paddle_width + ball_radius,
-        ball_radius,
-        window_size[0] - (game.PADDLE_X + game.PADDLE_WIDTH + ball_radius) * 2,
-        window_size[1] - 20 - ball_radius * 2,
-    )
+    ball_area_rect = play_area(display_size)
 
     score = 0
-    highscore = 0
 
     while True:
-        time.sleep(frame_length)
+        # TODO: Yeah, obviously this is wrong
+        time.sleep(FRAME_LENGTH)
 
-        ball_pos = (
-            ball_pos[0] + ball_speed * frame_length * ball_dir[0],
-            ball_pos[1] + ball_speed * frame_length * ball_dir[1],
+        ball_speed = INITIAL_BALL_SPEED + score * 10
+
+        ball_dir, inc_score = handle_ball_physics(
+            position=ball_pos,
+            direction=ball_dir,
+            play_area=ball_area_rect,
         )
 
-        if ball_pos[0] < ball_area_rect[0]:
-            # Bounced off the left: `score` + 1
+        if inc_score:
             score += 1
-            ball_dir = (1, ball_dir[1])
-        elif ball_pos[0] > ball_area_rect[0] + ball_area_rect[2]:
-            # Bounced off the right: `score` + 1
-            score += 1
-            ball_dir = (-1, ball_dir[1])
-        elif ball_pos[1] < ball_area_rect[1]:
-            ball_dir = (ball_dir[0], 1)
-        elif ball_pos[1] > ball_area_rect[1] + ball_area_rect[3]:
-            ball_dir = (ball_dir[0], -1)
 
-        renderables = [
-            render.Circle(ball_pos, ball_radius),
-            render.Rectangle(
-                (
-                    paddle_x,
-                    ball_pos[1] - half_paddle_height,
-                ),
-                pad_size,
-            ),
-            render.Rectangle(
-                (
-                    window_size[0] - paddle_x - paddle_width,
-                    ball_pos[1] - half_paddle_height,
-                ),
-                pad_size,
-            ),
-            render.Text(
-                (0, 0),
-                "SCORE: {}".format(score),
-            ),
-            render.Text(
-                (0, 20),
-                "HIGH: {}".format(highscore),
-            ),
-        ]
+        ball_pos = update_ball(
+            pos=ball_pos,
+            speed=ball_speed,
+            direction=ball_dir,
+        )
 
-        for (infos, (g, _)) in zip(window_infos, windows):
-            if infos is not None and physics.contains(
-                inner=ball_pos,
-                outer=(infos.x, infos.y, infos.width, infos.height),
-            ):
-                to_send = [messages.freeze()]
-            else:
-                to_send = [messages.unfreeze()]
+        renderables = mk_renderables(
+            ball_pos=ball_pos,
+            score=score,
+            highscore=highscore,
+            display_size=display_size
+        )
 
-            to_send.append(messages.render(renderables))
+        update_windows(
+            windows=windows,
+            window_infos=window_infos,
+            renderables=renderables,
+            ball_pos=ball_pos,
+        )
 
-            print(to_send)
-
-            g.send(to_send)
-
-        msgs = list(map(lambda (chan, _): chan.recv(), windows))
+        msgs = list(
+            map(
+                lambda chans: chans[0].recv(),
+                windows,
+            )
+        )
 
         # Evaluate this first so you don't lose by closing a window containing
         # a ball
@@ -152,20 +211,16 @@ def main():
 
         game_lost = False
         if not ended:
-            rectangles = map(
+            window_infos = map(
                 lambda m: m.info,
                 filter(messages.is_client_state, msgs),
             )
 
-            window_infos = rectangles
-
-            game_lost = not any(
-                filter(
-                    lambda rec: physics.contains(
-                        inner=ball_pos,
-                        outer=(rec.x, rec.y, rec.width, rec.height),
-                    ),
-                    rectangles
+            game_lost = not physics.any_contains(
+                inner=ball_pos,
+                outers=map(
+                    lambda info: (info.x, info.y, info.width, info.height),
+                    window_infos,
                 )
             )
 
@@ -173,13 +228,25 @@ def main():
                 print("You lost :(")
                 ended = True
 
-        if ended:
+        if ended or game_lost:
             for (g, _) in windows:
-                g.send(messages.quit())
-            return game_lost
+                g.send([messages.quit()])
+
+            if game_lost:
+                return score
+            else:
+                return None
         else:
             pass
 
+
 if __name__ == '__main__':
-    while main():
-        pass
+    high = 0
+
+    while True:
+        score = run_game(high)
+
+        if score is None:
+            break
+
+        high = max(score, high)

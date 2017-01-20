@@ -1,22 +1,21 @@
 from . import windowing, messages
-from .render import WHITE, BLACK
-
-from collections import namedtuple
+from .render import BLACK
 
 import pygame
 import sys
 import os
 
-PADDLE_HEIGHT = 100
-PADDLE_WIDTH = 30
-HALF_PADDLE_HEIGHT = PADDLE_HEIGHT // 2
-PADDLE_X = 50
+
+def shutdown():
+    pygame.quit()
+    sys.exit()
+
 
 def mk_game_process(
-        position=None,
-        size=(300, 300),
-        centered=False,
-        pinned=True
+    position=None,
+    size=(300, 300),
+    centered=False,
+    pinned=False
 ):
     """
     XXX
@@ -41,7 +40,11 @@ def mk_game_process(
         if position is not None:
             windowing.set_translation(win_handle, position)
         win_info = windowing.get_win_info(win_handle)
-        pin = None
+
+        if pinned:
+            pin = win_info.x, win_info.y
+        else:
+            pin = None
 
         while True:
             win_handle = pygame.display.get_wm_info()['window']
@@ -50,14 +53,12 @@ def mk_game_process(
             in_msgs = conn.recv()
 
             for in_msg in in_msgs:
-                # TODO: Using the same "quit" signaller for clients and terminals
-                #       probably a little weak, we should probably have seperate
-                #       ClientMessage and ServerMessage namedtuples
+                # TODO: Using the same "quit" signaller for clients and
+                #       terminals is probably a little weak, we should probably
+                #       have seperate ClientMessage and ServerMessage
+                #       namedtuples
                 if messages.is_quit(in_msg):
-                    # Explicitly _not_ using pygame.quit, since that causes
-                    # graphics exceptions and the entire purpose of doing this is
-                    # to allow graceful exiting.
-                    sys.exit()
+                    shutdown()
                 elif messages.is_render(in_msg):
                     if in_msg.info != last_renderables:
                         screen.fill(BLACK)
@@ -65,14 +66,17 @@ def mk_game_process(
                         for renderable in in_msg.info:
                             renderable.render(screen, (win_info.x, win_info.y))
 
-                        # TODO: Return bounding boxes out of `render`, convert for
-                        #       to map, pass it to this.
+                        # TODO: Return bounding boxes out of `render`, convert
+                        #       for to map, pass it to this.
                         pygame.display.update()
                 elif messages.is_freeze(in_msg):
-                    pin = win_info.x, win_info.y
+                    if not pinned:
+                        pin = win_info.x, win_info.y
                 elif messages.is_unfreeze(in_msg):
-                    pin = None
+                    if not pinned:
+                        pin = None
                 else:
+                    print('Cannot interpret {}'.format(in_msg))
                     raise NotImplementedError()
 
             # Pretend that we're still at the pin position if we're supposed to
@@ -92,7 +96,7 @@ def mk_game_process(
 
             if any(pygame.event.get(pygame.QUIT)):
                 conn.send(messages.quit())
-                sys.exit()
+                shutdown()
             else:
                 conn.send(messages.client_state(winf))
 

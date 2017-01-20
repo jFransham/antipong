@@ -5,6 +5,7 @@ BLACK = (0, 0, 0)
 DEFAULT_FONT = None
 DEFAULT_FONT_SIZE = 15
 
+
 def default_font():
     global DEFAULT_FONT
 
@@ -12,6 +13,7 @@ def default_font():
         DEFAULT_FONT = pygame.font.SysFont('monospace', DEFAULT_FONT_SIZE)
 
     return DEFAULT_FONT
+
 
 class Renderable(object):
     position = None
@@ -21,6 +23,7 @@ class Renderable(object):
 
     def render(self, surface, offset):
         raise NotImplementedError()
+
 
 class Circle(Renderable):
     radius = None
@@ -45,6 +48,7 @@ class Circle(Renderable):
             ),
             self.radius,
         )
+
 
 class Rectangle(Renderable):
     size = None
@@ -71,6 +75,7 @@ class Rectangle(Renderable):
             ),
         )
 
+
 class Text(Renderable):
     text = None
 
@@ -78,7 +83,7 @@ class Text(Renderable):
     #       supposed to be immutable.
     def __init__(self, pos, text):
         super(Text, self).__init__(pos)
-        self.text = unicode(text)
+        self.text = str(text)
 
     def __eq__(self, other):
         return isinstance(other, Rectangle) and (

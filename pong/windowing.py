@@ -16,8 +16,10 @@ WindowInfo = namedtuple(
     )
 )
 
+
 def is_windows():
     return os.name == 'nt'
+
 
 def display():
     global DEFAULT_DISPLAY
@@ -29,6 +31,7 @@ def display():
             DEFAULT_DISPLAY = Display()
 
         return DEFAULT_DISPLAY
+
 
 def get_win_info(handle):
     """
@@ -59,6 +62,7 @@ def get_win_info(handle):
             )
         except (Xlib.error.BadDrawable, Xlib.error.BadWindow):
             return None
+
 
 def set_translation(handle, pos):
     if is_windows():
