@@ -12,8 +12,9 @@ from . import messages, game, render, physics
 from itertools import repeat
 from multiprocessing import Process, Pipe
 
-FRAME_LENGTH = 0.05
-INITIAL_BALL_SPEED = 100
+FRAME_LENGTH = 1.0 / 60.0
+INITIAL_BALL_SPEED = 70
+BALL_SPEED_SCORE_MULTIPLIER = 10
 BALL_RADIUS = 10
 PADDLE_HEIGHT = 100
 PADDLE_WIDTH = 30
@@ -43,8 +44,8 @@ def get_width_height():
     return out
 
 
-def mk_renderables(ball_pos, score, highscore, display_size):
-    return [
+def mk_renderables(ball_pos, score, highscore, display_size, fps=None):
+    out = [
         render.Circle(ball_pos, BALL_RADIUS),
         render.Rectangle(
             (
@@ -70,6 +71,16 @@ def mk_renderables(ball_pos, score, highscore, display_size):
         ),
     ]
 
+    if fps is not None:
+        out.append(
+            render.Text(
+                (display_size[0] - 90, 0),
+                "FPS: {}".format(fps),
+            )
+        )
+
+    return out
+
 
 def mk_windows(display_size, pad_window_size):
     return [
@@ -91,10 +102,10 @@ def mk_windows(display_size, pad_window_size):
     ]
 
 
-def update_ball(pos, speed, direction):
+def update_ball(position, speed, direction, dt):
     return (
-        pos[0] + speed * FRAME_LENGTH * direction[0],
-        pos[1] + speed * FRAME_LENGTH * direction[1],
+        position[0] + speed * dt * direction[0],
+        position[1] + speed * dt * direction[1],
     )
 
 
@@ -123,9 +134,10 @@ def play_area(display_size):
     )
 
 
-def handle_ball_physics(position, direction, play_area):
+def handle_ball_physics(position, speed, direction, dt, play_area):
     inc_score = False
     out_dir = None
+    out_pos = update_ball(position, speed, direction, dt)
 
     if position[0] < play_area[0]:
         # Bounced off the left: `score` + 1
@@ -142,7 +154,7 @@ def handle_ball_physics(position, direction, play_area):
     else:
         out_dir = direction
 
-    return out_dir, inc_score
+    return out_pos, out_dir, inc_score
 
 
 def run_game(highscore):
@@ -162,33 +174,34 @@ def run_game(highscore):
     ball_area_rect = play_area(display_size)
 
     score = 0
+    last_time = time.time()
 
     while True:
-        # TODO: Yeah, obviously this is wrong
-        time.sleep(FRAME_LENGTH)
+        cur_time = time.time()
+        dt = cur_time - last_time
+        last_time = cur_time
 
-        ball_speed = INITIAL_BALL_SPEED + score * 10
+        time.sleep(max(FRAME_LENGTH - dt, 0))
 
-        ball_dir, inc_score = handle_ball_physics(
+        ball_speed = INITIAL_BALL_SPEED + score * BALL_SPEED_SCORE_MULTIPLIER
+
+        ball_pos, ball_dir, inc_score = handle_ball_physics(
             position=ball_pos,
+            speed=ball_speed,
             direction=ball_dir,
+            dt=dt,
             play_area=ball_area_rect,
         )
 
         if inc_score:
             score += 1
 
-        ball_pos = update_ball(
-            pos=ball_pos,
-            speed=ball_speed,
-            direction=ball_dir,
-        )
-
         renderables = mk_renderables(
             ball_pos=ball_pos,
             score=score,
             highscore=highscore,
-            display_size=display_size
+            display_size=display_size,
+            fps=1.0 / dt,
         )
 
         update_windows(
