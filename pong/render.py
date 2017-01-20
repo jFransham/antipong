@@ -7,6 +7,10 @@ DEFAULT_FONT_SIZE = 15
 
 
 def default_font():
+    """
+    The default font used to render `Text` objects
+    """
+
     global DEFAULT_FONT
 
     if DEFAULT_FONT is None:
@@ -16,6 +20,11 @@ def default_font():
 
 
 class Renderable(object):
+    """
+    An object that knows how to render itself onto a surface, given the
+    surface's position
+    """
+
     position = None
 
     def __init__(self, pos):

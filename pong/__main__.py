@@ -48,6 +48,22 @@ Options = namedtuple(
 
 
 def options(**kwargs):
+    """
+    Generate an `Options` structure, with any unsupplied parameters being
+    filled in by defaults. This can also be acheived by overriding
+    `Options.__new__.__defaults__`, but I'm going to avoid that option since I
+    don't want to go to hell today.
+
+    NOTE: This is used as a default argument for `run_game`, so it _MUST_ be
+          idempotent (and, ideally, pure).
+
+    Possible arguments to this function precisely match the field names for
+    `Options`. You can only supply these as named parameters, to simplify the
+    implementation of this function (if we wanted to supply positional
+    arguments too we could just use
+    `map(lambda a, b: a if a is not None else b, args, defaults.values())`).
+    """
+
     defaults = dict(
         target_fps=DEFAULT_TARGET_FPS,
         initial_ball_speed=DEFAULT_INITIAL_BALL_SPEED,
@@ -70,18 +86,27 @@ def options(**kwargs):
     return Options(**out_args)
 
 
-def subprocess(fn):
+def subprocess(function):
+    """
+    Create a subprocess that runs a function precisely once and exits.
+
+    :param function: A function taking a single pipe endpoint
+    :return:         A pipe endpoint
+    """
+
     my_conn, child_conn = Pipe()
 
-    proc = Process(target=fn, args=(child_conn,))
+    proc = Process(target=function, args=(child_conn,))
     proc.start()
 
-    return (my_conn, proc)
+    return my_conn
 
 
 def get_width_height():
     """
     Gets the width and height of the current display
+
+    :return: A tuple of (width, height)
     """
 
     # We have to open a window before `Info`, otherwise it grabs the whole
@@ -109,7 +134,14 @@ def mk_renderables(
     Builds the `Renderable` objects to send to the child processes for a given
     frame.
 
-    :param fps: If None, the FPS counter will not be shown.
+    :param ball_pos:      A two-element integer tuple of the position of the
+                          ball.
+    :param score:         An integer of the game's current score
+    :param highscore:     An integer of the player's current best score
+    :param display_size:  An integer tuple of (display width, display height)
+    :param fps:           An integer representing FPS, or None. If None, the
+                          FPS counter will not be shown
+    :return:              A list of `Renderable`s
     """
 
     paddle_width, paddle_height = options.paddle_size
@@ -154,15 +186,23 @@ def mk_renderables(
 
 def mk_windows(
     display_size,
-    pad_window_size,
+    paddle_window_size,
     options,
 ):
     """
-    Spawns the subprocesses and returns an array of (channel, process) tuples.
+    Spawns subprocesses with each of the game windows
 
-    :param display_size: The size of the display. This doesn't have to actually
-                         correspond to the pixels on the current display, and
-                         can be an arbitrary number.
+    :param display_size:       A two-element integer tuple representing the
+                               size of the display. This doesn't have to
+                               actually correspond to the pixels available on
+                               the current display, as long as it is consistent
+                               throughout the program
+    :param paddle_window_size: A two-element integer tuple of the size of the
+                               immovable windows at the left- and right-hand
+                               sides of the game area
+    :param options:            An `Options` object
+    :return:                   A list of channels to communicate with the child
+                               processes
     """
     # This game is actually unplayable with less than 2 windows, but
     # technically the code doesn't assume any more than 1, so if you want to be
@@ -171,13 +211,13 @@ def mk_windows(
 
     left_paddle_window = game.mk_game_process(
         position=(0, 0),
-        size=pad_window_size,
+        size=paddle_window_size,
         pinned=True,
     )
 
     right_paddle_window = game.mk_game_process(
-        position=(display_size[0] - pad_window_size[0], 0),
-        size=pad_window_size,
+        position=(display_size[0] - paddle_window_size[0], 0),
+        size=paddle_window_size,
         pinned=True,
     )
 
@@ -200,9 +240,19 @@ def mk_windows(
     return out
 
 
-def update_ball_position(position, speed, direction, dt):
+def tick_position(position, speed, direction, dt):
     """
+    Advances position a single tick
+
+    :param position:  A two-element float tuple of the current position
+    :param speed:     A float representing the current speed, in units of
+                      pixels * sqrt(2)
+    :param direction: A two-element numerical tuple of the current movement
+                      direction. Both elements should be one of [-1, 1]
     """
+
+    # TODO: Should `direction` be normalised to support balls going in
+    #       arbitrary directions? Could lead to some wacky multiball fun.
     return (
         position[0] + speed * dt * direction[0],
         position[1] + speed * dt * direction[1],
@@ -210,8 +260,18 @@ def update_ball_position(position, speed, direction, dt):
 
 
 # TODO: Should this call `mk_renderables` instead of taking it as an argument?
-def update_windows(windows, window_infos, renderables, ball_pos):
-    for (infos, (g, _)) in zip(window_infos, windows):
+def update_windows(windows, renderables, ball_pos):
+    """
+    Sends one tick's worth of messages to the child windows. It will
+    freeze/unfreeze children based on the ball's position, and render all the
+    objects on screen.
+
+    :param windows:     A list of two-element tuples (channel, window info)
+    :param renderables: A list of `Renderable`s. These must be picklable
+    :param ball_pos:    A two element tuple of the ball's current position
+    """
+
+    for (chan, infos) in windows:
         if infos is not None and physics.contains(
             inner=ball_pos,
             outer=(infos.x, infos.y, infos.width, infos.height),
@@ -222,10 +282,17 @@ def update_windows(windows, window_infos, renderables, ball_pos):
 
         to_send.append(messages.render(renderables))
 
-        g.send(to_send)
+        chan.send(to_send)
 
 
 def play_area(display_size, options):
+    """
+    Gets the area that represents legal values for the ball's position
+
+    :param display_size: A two-element integer tuple representing the total
+                         visible size of the game
+    :param options:      An `Options` object 
+    """
     side_offset = (
         options.paddle_x + options.paddle_size[0] + options.ball_radius
     )
@@ -241,7 +308,7 @@ def play_area(display_size, options):
 def handle_ball_physics(position, speed, direction, dt, play_area):
     inc_score = False
     out_dir = None
-    out_pos = update_ball_position(position, speed, direction, dt)
+    out_pos = tick_position(position, speed, direction, dt)
 
     if direction[0] < 0 and position[0] < play_area[0]:
         # Bounced off the left: `score` + 1
@@ -271,17 +338,26 @@ def rolling_average(average, current, multiplier=0.1):
 
 
 def run_game(highscore, options=options()):
+    """
+    Run a single iteration of the game, and tear down when finished.
+
+    :param highscore: The maximum score acheived by the player.
+    :param options:   The 
+    """
+
     frame_length = 1.0 / options.target_fps
     paddle_width = options.paddle_size[0]
 
+    # TODO: extract this out to Options, with the default being taken from
+    #       `get_width_height`.
     display_size = get_width_height()
     ball_pos = display_size[0] // 2, display_size[1] // 2
     ball_dir = 1, 1
     pad_window_size = paddle_width * 3, display_size[1]
 
-    windows = mk_windows(display_size, pad_window_size, options=options)
+    chans = mk_windows(display_size, pad_window_size, options=options)
 
-    window_infos = list(repeat(None, len(windows)))
+    window_infos = list(repeat(None, len(chans)))
 
     # Instead of recalculating the borders offset with the ball radius, just
     # calculate them once here. A ball of radius R bouncing off a rectangle of
@@ -326,16 +402,15 @@ def run_game(highscore, options=options()):
         )
 
         update_windows(
-            windows=windows,
-            window_infos=window_infos,
+            windows=zip(chans, window_infos),
             renderables=renderables,
             ball_pos=ball_pos,
         )
 
         msgs = list(
             map(
-                lambda chans: chans[0].recv(),
-                windows,
+                lambda chans: chans.recv(),
+                chans,
             )
         )
 
@@ -362,8 +437,8 @@ def run_game(highscore, options=options()):
                 ended = True
 
         if ended or game_lost:
-            for (g, _) in windows:
-                g.send([messages.quit()])
+            for chan in chans:
+                chan.send([messages.quit()])
 
             if game_lost:
                 return score
