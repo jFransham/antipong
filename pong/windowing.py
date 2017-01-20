@@ -17,7 +17,7 @@ WindowInfo = namedtuple(
 )
 
 def is_windows():
-    return os == 'nt'
+    return os.name == 'nt'
 
 def display():
     global DEFAULT_DISPLAY
@@ -30,7 +30,7 @@ def display():
 
         return DEFAULT_DISPLAY
 
-    def get_win_info(handle):
+def get_win_info(handle):
     """
     We assume that handle is a HWND on Windows, and an X11 Xid otherwise
     (sorry, Wayland). Since these are gathered via Python's multiprocessing
@@ -38,6 +38,7 @@ def display():
     then this code wouldn't work even if I made it cross-platform (I'd have to
     gather the window info in the subprocesses)
     """
+
     # TODO: Move all these is_windows calls to the top level (so they're not
     # called every iteration, ugh)
     if is_windows():
