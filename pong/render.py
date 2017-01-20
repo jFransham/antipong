@@ -79,8 +79,6 @@ class Rectangle(Renderable):
 class Text(Renderable):
     text = None
 
-    # TODO: Should we discard the original text here? These classes _are_
-    #       supposed to be immutable.
     def __init__(self, pos, text):
         super(Text, self).__init__(pos)
         self.text = str(text)
