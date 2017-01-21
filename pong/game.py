@@ -4,6 +4,7 @@ from .render import BLACK
 import pygame
 import sys
 import os
+import time
 
 
 def shutdown():
@@ -11,38 +12,47 @@ def shutdown():
     sys.exit()
 
 
-def mk_game_process(
-    position=None,
-    size=(300, 300),
-    centered=False,
-    pinned=False
-):
+class GameProcess(object):
     """
-    This creates a function to use with multiprocessing, that closes over the
-    passed-in functions.
+    A single instance of the game's client processes
 
-    The subprocesses here are basically dumb terminals, only able to draw and
-    report their position (and set their position). It would be possible to do
-    this in a single-process environment, but there are no Python SDL wrappers
-    (or other simplistic graphics libs) that support multiple windows as far as
-    I can see, and I don't feel like manually dinking with Gtk or worse, X.
-
-    Also, I was explicitly requested to use multiprocessing anyway, so my hands
-    would be tied either way.
+    NOTE: On Linux I can pickle closures, but to get this to run on Windows I
+          have to make this single-method class. The documentation says I
+          shouldn't be able to pickle closures at all, so I don't know why
+          that's kosher on Linux.
     """
 
-    def game_process(conn):
-        if centered:
+    position=None
+    size=None
+    centered=None
+    pinned=None
+
+    def __init__(
+        self,
+        position=None,
+        size=(300, 300),
+        centered=False,
+        pinned=False
+    ):
+        self.position = position
+        self.size = size
+        self.centered = centered
+        self.pinned = pinned
+
+    def go(self, conn):
+        if self.centered:
             os.environ['SDL_VIDEO_CENTERED'] = '1'
 
         pygame.init()
-        surface = pygame.display.set_mode(size)
+        surface = pygame.display.set_mode(self.size)
         win_handle = pygame.display.get_wm_info()['window']
-        if position is not None:
-            windowing.set_translation(win_handle, position)
+
+        if self.position is not None:
+            windowing.set_translation(win_handle, self.position)
+
         win_info = windowing.get_win_info(win_handle)
 
-        if pinned:
+        if self.pinned:
             pin = win_info.x, win_info.y
         else:
             pin = None
@@ -52,6 +62,8 @@ def mk_game_process(
             win_info = windowing.get_win_info(win_handle)
 
             in_msgs = conn.recv()
+            while conn.poll():
+                in_msgs = conn.recv()
 
             for in_msg in in_msgs:
                 # TODO: Using the same "quit" signaller for clients and
@@ -84,10 +96,10 @@ def mk_game_process(
                     #       because we don't need the performance.
                     pygame.display.update()
                 elif messages.is_freeze(in_msg):
-                    if not pin and not pinned:
+                    if not pin and not self.pinned:
                         pin = win_info.x, win_info.y
                 elif messages.is_unfreeze(in_msg):
-                    if not pinned:
+                    if not self.pinned:
                         pin = None
                 else:
                     print('Cannot interpret {}'.format(in_msg))
@@ -114,4 +126,13 @@ def mk_game_process(
             else:
                 conn.send(messages.client_state(winf))
 
-    return game_process
+
+def run_process(game_process, connection):
+    """
+    Just a wrapper to allow using this with the `Process` API. This function
+    will never return.
+
+    :param game_process: An instance of `GameProcess`
+    :param connection:   An endpoint of a `Pipe`
+    """
+    game_process.go(connection)

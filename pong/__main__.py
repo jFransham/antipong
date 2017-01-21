@@ -9,8 +9,6 @@ How to play: Move the windows so that the ball is always visible on at least
              To increase difficulty, buy a bigger monitor.
 """
 
-from __future__ import absolute_import
-
 import sys
 import os
 import time
@@ -86,20 +84,20 @@ def options(**kwargs):
     return Options(**out_args)
 
 
-def subprocess(function):
+def subprocess(game_process):
     """
-    Create a subprocess that runs a function precisely once and exits.
+    Create a subprocess that runs a `GameProcess`
 
-    :param function: A function taking a single pipe endpoint
-    :return:         A pipe endpoint
+    :param game_process: An instance of `GameProcess`
+    :return:             A tuple of (pipe endpoint, process)
     """
 
     my_conn, child_conn = Pipe()
 
-    proc = Process(target=function, args=(child_conn,))
+    proc = Process(target=game.run_process, args=(game_process, child_conn,))
     proc.start()
 
-    return my_conn
+    return my_conn, proc
 
 
 def get_width_height():
@@ -126,6 +124,7 @@ def mk_renderables(
     ball_pos,
     score,
     highscore,
+    last_score,
     display_size,
     options,
     fps=None,
@@ -169,9 +168,17 @@ def mk_renderables(
         ),
         render.Text(
             (0, 20),
-            "HIGH: {}".format(highscore),
+            "HIGH:  {}".format(highscore),
         ),
     ]
+
+    if last_score is not None:
+        out.append(
+            render.Text(
+                (0, 40),
+                "LAST:  {}".format(last_score),
+            )
+        )
 
     if fps is not None:
         out.append(
@@ -209,13 +216,13 @@ def mk_windows(
     # sadistic then go crazy.
     assert options.num_movable_windows >= 1
 
-    left_paddle_window = game.mk_game_process(
+    left_paddle_window = game.GameProcess(
         position=(0, 0),
         size=paddle_window_size,
         pinned=True,
     )
 
-    right_paddle_window = game.mk_game_process(
+    right_paddle_window = game.GameProcess(
         position=(display_size[0] - paddle_window_size[0], 0),
         size=paddle_window_size,
         pinned=True,
@@ -225,9 +232,9 @@ def mk_windows(
         subprocess(left_paddle_window),
         subprocess(right_paddle_window),
     ]
-    movable_window = game.mk_game_process()
+    movable_window = game.GameProcess()
 
-    out.append(subprocess(game.mk_game_process(centered=True)))
+    out.append(subprocess(game.GameProcess(centered=True)))
     # Subtract one, because the first one is the centered one on the previous
     # line
     out.extend(
@@ -259,16 +266,36 @@ def tick_position(position, speed, direction, dt):
     )
 
 
-# TODO: Should this call `mk_renderables` instead of taking it as an argument?
-def update_windows(windows, renderables, ball_pos):
+def try_recv(chan):
     """
-    Sends one tick's worth of messages to the child windows. It will
-    freeze/unfreeze children based on the ball's position, and render all the
-    objects on screen.
+    Non-blocking version of `Channel.recv`
+    """
+    if chan.poll():
+        return chan.recv()
+    else:
+        return None
+
+
+# TODO: Should this call `mk_renderables` instead of taking it as an argument?
+def update_windows(windows, renderables, ball_pos, should_block=False):
+    """
+    Sends one tick's worth of messages to the child windows, and return the
+    result. It will freeze/unfreeze children based on the ball's position, and
+    render all the objects on screen.
+
+    NOTE: If one of the processes is not responding to messages this will
+          block after a couple of seconds as the connection's buffer fills up.
+          The correct way to fix this is to use a version of connection that
+          has a ring buffer instead of a blocking buffer. There doesn't seem to
+          be a process-aware non-blocking ring buffer in Python's stdlib
+          (`collections.deque` comes close, but is single-process only, and
+          `multiprocessing.Queue` blocks when full) and writing one is out of
+          scope for this project.
 
     :param windows:     A list of two-element tuples (channel, window info)
     :param renderables: A list of `Renderable`s. These must be picklable
     :param ball_pos:    A two element tuple of the ball's current position
+    :return:            A list of responses from the windows
     """
 
     for (chan, infos) in windows:
@@ -284,6 +311,27 @@ def update_windows(windows, renderables, ball_pos):
 
         chan.send(to_send)
 
+    # Pass this to `list` to force all the `recv` calls at the same time (to
+    # avoid confusing behaviour if we pass this to a function that doesn't
+    # consume the whole list, or suchlike).
+    # Additionally, we use blocking `recv` if there is no existing window info,
+    # since we can't do anything at all if we've never received window size/pos
+    # information for a given window. Otherwise, non-blocking `recv` is used.
+    if should_block:
+        return list(
+            map(
+                lambda (chan, info): chan.recv(),
+                windows,
+            )
+        )
+    else:
+        return list(
+            map(
+                lambda chan: try_recv(chan[0]),
+                windows,
+            )
+        )
+
 
 def play_area(display_size, options):
     """
@@ -291,7 +339,7 @@ def play_area(display_size, options):
 
     :param display_size: A two-element integer tuple representing the total
                          visible size of the game
-    :param options:      An `Options` object 
+    :param options:      An `Options` object
     """
     side_offset = (
         options.paddle_x + options.paddle_size[0] + options.ball_radius
@@ -332,17 +380,30 @@ def rolling_average(average, current, multiplier=0.1):
     """
     Calculate a rolling average by adding a proportion of the difference with
     each new value.
-    """
 
+    :param average:    The existing average
+    :param current:    The latest value
+    :param multiplier: The amount to change the average with each new value
+    """
     return average + (current - average) * multiplier
 
 
-def run_game(highscore, options=options()):
+def unzip(tuple_list):
     """
-    Run a single iteration of the game, and tear down when finished.
+    Converts an enumerable of tuples to a tuple of lists
+
+    :param tuple_list: An enumerable of tuples
+    :return:           A tuple of length `min(map(len, tuple_list))``
+    """
+    return tuple(map(list, zip(*tuple_list)))
+
+
+def run_game(last_score, highscore, options=options()):
+    """
+    Run a single instance of the game, and tear down when finished.
 
     :param highscore: The maximum score acheived by the player.
-    :param options:   The 
+    :param options:   An `Options` object
     """
 
     frame_length = 1.0 / options.target_fps
@@ -355,9 +416,12 @@ def run_game(highscore, options=options()):
     ball_dir = 1, 1
     pad_window_size = paddle_width * 3, display_size[1]
 
-    chans = mk_windows(display_size, pad_window_size, options=options)
+    chans, procs = unzip(
+        mk_windows(display_size, pad_window_size, options=options)
+    )
 
     window_infos = list(repeat(None, len(chans)))
+    first_iteration = True
 
     # Instead of recalculating the borders offset with the ball radius, just
     # calculate them once here. A ball of radius R bouncing off a rectangle of
@@ -376,67 +440,70 @@ def run_game(highscore, options=options()):
         avg_fps = rolling_average(avg_fps, fps)
         last_time = cur_time
 
-        ball_speed = (
-            options.initial_ball_speed +
-            score * options.ball_speed_score_multiplier
+        while dt > 0:
+            step_dt = min(dt, frame_length)
+
+            ball_speed = (
+                options.initial_ball_speed +
+                score * options.ball_speed_score_multiplier
+            )
+
+            ball_pos, ball_dir, inc_score = handle_ball_physics(
+                position=ball_pos,
+                speed=ball_speed,
+                direction=ball_dir,
+                dt=step_dt,
+                play_area=ball_area_rect,
+            )
+
+            if inc_score:
+                score += 1
+
+            renderables = mk_renderables(
+                ball_pos=ball_pos,
+                score=score,
+                highscore=highscore,
+                last_score=last_score,
+                display_size=display_size,
+                options=options,
+                fps=int(round(avg_fps)),
+            )
+
+            msgs = update_windows(
+                windows=zip(chans, window_infos),
+                renderables=renderables,
+                ball_pos=ball_pos,
+                should_block=first_iteration,
+            )
+
+            dt -= frame_length
+
+        window_infos = map(
+            lambda (m, last): (
+                m.info
+                if messages.is_client_state(m)
+                else last
+            ),
+            zip(msgs, window_infos),
         )
 
-        ball_pos, ball_dir, inc_score = handle_ball_physics(
-            position=ball_pos,
-            speed=ball_speed,
-            direction=ball_dir,
-            dt=dt,
-            play_area=ball_area_rect,
-        )
-
-        if inc_score:
-            score += 1
-
-        renderables = mk_renderables(
-            ball_pos=ball_pos,
-            score=score,
-            highscore=highscore,
-            display_size=display_size,
-            options=options,
-            fps=int(round(avg_fps)),
-        )
-
-        update_windows(
-            windows=zip(chans, window_infos),
-            renderables=renderables,
-            ball_pos=ball_pos,
-        )
-
-        msgs = list(
-            map(
-                lambda chans: chans.recv(),
-                chans,
+        game_lost = not physics.any_contains(
+            inner=ball_pos,
+            outers=map(
+                lambda info: (info.x, info.y, info.width, info.height),
+                window_infos,
             )
         )
 
-        # Evaluate this first so you don't lose by closing a window containing
-        # a ball
-        ended = any(filter(messages.is_quit, msgs))
+        # NOTE: Ideally we'd only use message-passing here to exit gracefully,
+        #       but we can't handle SIGHUP and friends so we'll exit if one of
+        #       our children dies unexpectedly
+        ended = game_lost or (
+            any(filter(messages.is_quit, msgs)) or
+            any(filter(lambda p: not p.is_alive(), procs))
+        )
 
-        game_lost = False
-        if not ended:
-            window_infos = map(
-                lambda m: m.info,
-                filter(messages.is_client_state, msgs),
-            )
-
-            game_lost = not physics.any_contains(
-                inner=ball_pos,
-                outers=map(
-                    lambda info: (info.x, info.y, info.width, info.height),
-                    window_infos,
-                )
-            )
-
-            if game_lost:
-                ended = True
-
-        if ended or game_lost:
+        if ended:
             for chan in chans:
                 chan.send([messages.quit()])
 
@@ -451,44 +518,101 @@ def run_game(highscore, options=options()):
         process_time = post_time - cur_time
         time.sleep(max(frame_length - process_time, 0))
 
+        first_iteration = False
+
 
 if __name__ == '__main__':
-    def args_to_options_dict_elements(arg):
-        name, val = arg
+    CmdFlags = namedtuple(
+        'CmdFlags',
+        (
+            'short_flag',
+            'long_flag',
+            'field_name',
+            'field_type',
+            'help_text',
+        ),
+    )
 
-        if name in ('-w', '--windows'):
-            return ('num_movable_windows', int(val))
-        elif name in ('-s', '--speed'):
-            return ('ball_speed', int(val))
-        elif name in ('-m', '--multiplier'):
-            return ('ball_speed_score_multiplier', int(val))
-        elif name in ('-o', '--scorefile'):
-            return ('scorefile_path', int(val))
-        else:
+    flags = [
+        CmdFlags(
+            'w', 'windows', 'num_movable_windows', int,
+            'Set number of movable game windows (minimum 1, default '
+            '{})'.format(
+                DEFAULT_NUM_MOVABLE_WINDOWS
+            ),
+        ),
+        CmdFlags(
+            's', 'speed', 'ball_speed', int,
+            'Set initial ball speed (default {})'.format(
+                DEFAULT_INITIAL_BALL_SPEED
+            ),
+        ),
+        CmdFlags(
+            'm', 'multiplier', 'ball_speed_score_multiplier', int,
+            'Set amount ball speed increases with each bounce off the paddles'
+            '(default {})'.format(
+                DEFAULT_BALL_SPEED_SCORE_MULTIPLIER
+            ),
+        ),
+        CmdFlags(
+            'o', 'scorefile', 'scorefile_path', str,
+            'Set the path where highscores will be written (default '
+            '{})'.format(
+                DEFAULT_SCOREFILE_PATH
+            )
+        ),
+    ]
+
+    def args_to_options_dict_elements(flagdefs):
+        def args_to_dict_inner(arg):
+            name, val = arg
+
+            for flagdef in flagdefs:
+                if (
+                    name == '-{}'.format(flagdef.short_flag) or
+                    name == '--{}'.format(flagdef.long_flag)
+                ):
+                    return flagdef.field_name, flagdef.field_type(val)
+
             return None
 
+        return args_to_dict_inner
+
     docstring = (
-        'Possible options:\n'
-        '    -w, --windows     Set number of movable game windows '
-        '(minimum 1, default {num_windows})\n'
-        '    -s, --speed       Set initial ball speed (default '
-        '{ball_speed})\n'
-        '    -m, --multiplier  Set amount ball speed increases with '
-        'each bounce off the paddles (default {ball_multiplier})\n'
-        '    -o, --scorefile   Set the path where highscores will be'
-        '                      written (default {scorefile})\n'
-    ).format(
-        num_windows=DEFAULT_NUM_MOVABLE_WINDOWS,
-        ball_speed=DEFAULT_INITIAL_BALL_SPEED,
-        ball_multiplier=DEFAULT_BALL_SPEED_SCORE_MULTIPLIER,
-        scorefile=DEFAULT_SCOREFILE_PATH,
+        'Possible options:\n' +
+        '\n'.join(
+            map(
+                lambda flag: (
+                    '    -{}, --{}\n        {}'.format(
+                        flag.short_flag,
+                        flag.long_flag,
+                        flag.help_text,
+                    )
+                ),
+                flags,
+            )
+        )
+    )
+
+    shortopts = ''.join(
+        map(
+            lambda flag: flag.short_flag + ':',
+            flags
+        )
+    )
+
+    longopts = list(
+        map(
+            lambda flag: flag.long_flag + '=',
+            flags
+        )
     )
 
     try:
         opts, argv = getopt.getopt(
             sys.argv[1:],
-            'w:s:m:o:',
-            ['windows=', 'speed=', 'multiplier=', 'scorefile='],
+            shortopts,
+            longopts,
         )
     except getopt.GetoptError:
         print(docstring)
@@ -498,7 +622,7 @@ if __name__ == '__main__':
         filter(
             lambda x: x is not None,
             map(
-                args_to_options_dict_elements,
+                args_to_options_dict_elements(flags),
                 opts
             )
         )
@@ -511,8 +635,10 @@ if __name__ == '__main__':
         with open(options.scorefile_path, 'r') as score_file:
             high = int(score_file.read())
 
+    score = None
+
     while True:
-        score = run_game(high, options)
+        score = run_game(score, high, options)
 
         if score is None:
             break
