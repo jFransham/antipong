@@ -385,7 +385,7 @@ def update_windows(windows, renderables, ball_pos, should_block=False):
     if should_block:
         return list(
             map(
-                lambda (chan, info): messages.consume_connection_buffer(chan),
+                lambda window: messages.consume_connection_buffer(window[0]),
                 windows,
             )
         )
@@ -462,6 +462,14 @@ def unzip(tuple_list):
     :return:           A tuple of length `min(map(len, tuple_list))``
     """
     return tuple(map(list, zip(*tuple_list)))
+
+
+def get_client_state_or_default(message, default):
+    """
+    Try to get a `client_state` message's info, but if that fails return a
+    default value.
+    """
+    return message.info if messages.is_client_state(message) else default
 
 
 def run_game(last_score, highscore, options=options()):
@@ -559,11 +567,7 @@ def run_game(last_score, highscore, options=options()):
         )
 
         window_infos = map(
-            lambda (m, last): (
-                m.info
-                if messages.is_client_state(m)
-                else last
-            ),
+            lambda tup: get_client_state_or_default(*tup),
             zip(msgs, window_infos),
         )
 
