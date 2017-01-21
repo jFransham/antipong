@@ -22,10 +22,18 @@ CLIENT_STATE = 'client_state'
 
 # TODO: Should this go here? This file doesn't otherwise know anything about
 #       channels
-def consume_channel_buffer(chan):
-    out = chan.recv()
-    while chan.poll():
-        out = chan.recv()
+def consume_connection_buffer(connection):
+    """
+    Clear a connection's message buffer, returning the most recently-received
+    message and discarding the rest. This will block until there is at least
+    one message in the queue.
+
+    :param connection: The connection to consume
+    :return:           The most recently-received message on the connection
+    """
+    out = connection.recv()
+    while connection.poll():
+        out = connection.recv()
 
     return out
 

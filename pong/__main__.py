@@ -326,17 +326,13 @@ def try_recv(chan, consume=False):
     Non-blocking version of `Channel.recv`
     """
     if chan.poll():
-        return consume_channel_buffer(chan) if consume else chan.recv()
+        return (
+            messages.consume_connection_buffer(chan)
+            if consume
+            else chan.recv()
+        )
     else:
         return None
-
-
-def consume_channel_buffer(chan):
-    out = chan.recv()
-    while chan.poll():
-        out = chan.recv()
-
-    return out
 
 
 # TODO: Should this call `mk_renderables` instead of taking it as an argument?
@@ -389,7 +385,7 @@ def update_windows(windows, renderables, ball_pos, should_block=False):
     if should_block:
         return list(
             map(
-                lambda (chan, info): consume_channel_buffer(chan),
+                lambda (chan, info): messages.consume_connection_buffer(chan),
                 windows,
             )
         )
