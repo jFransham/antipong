@@ -8,6 +8,8 @@ an annoying issue with Windows's blocking event loop. If only
 Yeah that's right, for once X11 is the _good_ example of a
 windowing system implementation.
 
+To run, use `python2 -m pong`
+
 Anyway, here's a gifje
 
 ![Screencast](assets/screencast.gif)
