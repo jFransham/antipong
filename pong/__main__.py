@@ -1,3 +1,5 @@
+#!/bin/python2.7
+
 """
 Python antipong.
 
@@ -96,6 +98,7 @@ def options(**kwargs):
         paddle_size=DEFAULT_PADDLE_SIZE,
         scorefile_path=DEFAULT_SCOREFILE_PATH,
         movable_window_size=DEFAULT_MOVABLE_WINDOW_SIZE,
+        display_size=None,
     )
 
     # Merge two dictionaries
@@ -105,11 +108,6 @@ def options(**kwargs):
             kwargs.items(),
         )
     )
-
-    # Do this seperately so we don't try to get display size if it is explictly
-    # provided. We can probably do this better.
-    if 'display_size' not in out_args:
-        out_args['display_size'] = memoized_display_size()
 
     return Options(**out_args)
 
@@ -478,11 +476,15 @@ def run_game(last_score, highscore, options=options()):
     :param options:   An `Options` object
     """
 
+    display_size = (
+        options.display_size
+        if options.display_size is not None
+        else memoized_display_size()
+    )
     frame_length = 1.0 / options.target_fps
     paddle_width = options.paddle_size[0]
     pause_time = 3
 
-    display_size = options.display_size
     ball_pos = display_size[0] // 2, display_size[1] // 2
     ball_dir = 1, 1
     pad_window_size = paddle_width * 3, display_size[1]
@@ -631,7 +633,7 @@ def args_to_options_dict_elements(flagdefs):
         name, val = arg
 
         for flagdef in flagdefs:
-            if (
+            if flagdef.in_output and (
                 name == '-{}'.format(flagdef.short_flag) or
                 name == '--{}'.format(flagdef.long_flag)
             ):
@@ -651,8 +653,14 @@ if __name__ == '__main__':
             'field_name',
             'field_type',
             'help_text',
+            'in_output',
         ),
     )
+
+    # These are hardcoded into getopt, so they're only supplied in `flags` to
+    # show up in the docstring
+    short_help = 'h'
+    long_help = 'help'
 
     flags = [
         CmdFlags(
@@ -661,16 +669,21 @@ if __name__ == '__main__':
             '{})'.format(
                 DEFAULT_NUM_MOVABLE_WINDOWS
             ),
+            in_output=True,
         ),
         CmdFlags(
             'z', 'window_size', 'movable_window_size', typed_tuple(int, n=2),
-            'Set the size of the movable game windows (default (300, 300))'
+            'Set the size of the movable game windows (default {})'.format(
+                DEFAULT_MOVABLE_WINDOW_SIZE
+            ),
+            in_output=True,
         ),
         CmdFlags(
             's', 'speed', 'ball_speed', int,
             'Set initial ball speed (default {})'.format(
                 DEFAULT_INITIAL_BALL_SPEED
             ),
+            in_output=True,
         ),
         CmdFlags(
             'm', 'multiplier', 'ball_speed_score_multiplier', int,
@@ -678,17 +691,25 @@ if __name__ == '__main__':
             '(default {})'.format(
                 DEFAULT_BALL_SPEED_SCORE_MULTIPLIER
             ),
+            in_output=True,
         ),
         CmdFlags(
             'o', 'scorefile', 'scorefile_path', str,
             'Set the path where highscores will be written (default '
             '{})'.format(
                 DEFAULT_SCOREFILE_PATH
-            )
+            ),
+            in_output=True,
         ),
         CmdFlags(
             's', 'displaysize', 'display_size', typed_tuple(int, n=2),
-            'Set the display size of the game - if not set, will be inferred'
+            'Set the display size of the game - if not set, will be inferred',
+            in_output=True,
+        ),
+        CmdFlags(
+            short_help, long_help, None, None,
+            'Show this message',
+            in_output=False,
         ),
     ]
 
@@ -730,7 +751,7 @@ if __name__ == '__main__':
         )
     except getopt.GetoptError:
         print(docstring)
-        sys.exit()
+        sys.exit(2)
 
     opts_args = dict(
         filter(
