@@ -61,9 +61,7 @@ class GameProcess(object):
             win_handle = pygame.display.get_wm_info()['window']
             win_info = windowing.get_win_info(win_handle)
 
-            in_msgs = conn.recv()
-            while conn.poll():
-                in_msgs = conn.recv()
+            in_msgs = messages.consume_channel_buffer(conn)
 
             for in_msg in in_msgs:
                 # TODO: Using the same "quit" signaller for clients and

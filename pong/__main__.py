@@ -12,6 +12,7 @@ How to play: Move the windows so that the ball is always visible on at least
 import sys
 import os
 import time
+import math
 import pygame
 import getopt
 
@@ -27,8 +28,9 @@ DEFAULT_BALL_SPEED_SCORE_MULTIPLIER = 10
 DEFAULT_BALL_RADIUS = 10
 DEFAULT_NUM_MOVABLE_WINDOWS = 5
 DEFAULT_PADDLE_X = 50
-DEFAULT_PADDLE_SIZE = (30, 100)
+DEFAULT_PADDLE_SIZE = 30, 100
 DEFAULT_SCOREFILE_PATH = './score.txt'
+DEFAULT_MOVABLE_WINDOW_SIZE = 300, 300
 
 Options = namedtuple(
     'Options',
@@ -41,8 +43,30 @@ Options = namedtuple(
         'paddle_x',
         'paddle_size',
         'scorefile_path',
+        'display_size',
+        'movable_window_size'
     ]
 )
+
+
+DISPLAY_SIZE = None
+
+
+def memoized_display_size():
+    """
+    Get the display size as first calculated by this program. The weird name is
+    to make it explicit that this is not recalculated when the program changes
+    displays.
+
+    :return: An integer tuple of (display width, display height)
+    """
+
+    global DISPLAY_SIZE
+
+    if DISPLAY_SIZE is None:
+        DISPLAY_SIZE = display_size()
+
+    return DISPLAY_SIZE
 
 
 def options(**kwargs):
@@ -71,6 +95,7 @@ def options(**kwargs):
         paddle_x=DEFAULT_PADDLE_X,
         paddle_size=DEFAULT_PADDLE_SIZE,
         scorefile_path=DEFAULT_SCOREFILE_PATH,
+        movable_window_size=DEFAULT_MOVABLE_WINDOW_SIZE,
     )
 
     # Merge two dictionaries
@@ -80,6 +105,11 @@ def options(**kwargs):
             kwargs.items(),
         )
     )
+
+    # Do this seperately so we don't try to get display size if it is explictly
+    # provided. We can probably do this better.
+    if 'display_size' not in out_args:
+        out_args['display_size'] = memoized_display_size()
 
     return Options(**out_args)
 
@@ -100,7 +130,7 @@ def subprocess(game_process):
     return my_conn, proc
 
 
-def get_width_height():
+def display_size():
     """
     Gets the width and height of the current display
 
@@ -128,6 +158,7 @@ def mk_renderables(
     display_size,
     options,
     fps=None,
+    time_left=None,
 ):
     """
     Builds the `Renderable` objects to send to the child processes for a given
@@ -188,6 +219,17 @@ def mk_renderables(
             )
         )
 
+    if time_left is not None:
+        out.append(
+            render.Text(
+                (
+                    display_size[0] // 2 + options.ball_radius,
+                    display_size[1] // 2 + options.ball_radius,
+                ),
+                str(int(math.ceil(time_left))),
+            )
+        )
+
     return out
 
 
@@ -232,9 +274,24 @@ def mk_windows(
         subprocess(left_paddle_window),
         subprocess(right_paddle_window),
     ]
-    movable_window = game.GameProcess()
 
-    out.append(subprocess(game.GameProcess(centered=True)))
+    # NOTE: I calculate this manually instead of just using `centered=True` to
+    #       ensure that at least one window is in the center of the game area
+    #       at the start (since the game area may not be centered on the center
+    #       of the screen, or SDL may not be able to request a centered window)
+    out.append(
+        subprocess(
+            game.GameProcess(
+                position=(
+                    (display_size[0] - options.movable_window_size[0]) // 2,
+                    (display_size[1] - options.movable_window_size[1]) // 2,
+                ),
+                size=options.movable_window_size,
+            )
+        )
+    )
+
+    movable_window = game.GameProcess(size=options.movable_window_size)
     # Subtract one, because the first one is the centered one on the previous
     # line
     out.extend(
@@ -266,14 +323,22 @@ def tick_position(position, speed, direction, dt):
     )
 
 
-def try_recv(chan):
+def try_recv(chan, consume=False):
     """
     Non-blocking version of `Channel.recv`
     """
     if chan.poll():
-        return chan.recv()
+        return consume_channel_buffer(chan) if consume else chan.recv()
     else:
         return None
+
+
+def consume_channel_buffer(chan):
+    out = chan.recv()
+    while chan.poll():
+        out = chan.recv()
+
+    return out
 
 
 # TODO: Should this call `mk_renderables` instead of taking it as an argument?
@@ -291,6 +356,12 @@ def update_windows(windows, renderables, ball_pos, should_block=False):
           (`collections.deque` comes close, but is single-process only, and
           `multiprocessing.Queue` blocks when full) and writing one is out of
           scope for this project.
+
+          Keeping this update loop non-blocking is actually really important,
+          because `pygame` (maybe `SDL`?) will block when moving the window on
+          Windows. This seems to be related to Windows's blocking event loop,
+          although it could probably be circumvented if `pygame`/`SDL` was
+          designed with it in mind.
 
     :param windows:     A list of two-element tuples (channel, window info)
     :param renderables: A list of `Renderable`s. These must be picklable
@@ -320,14 +391,14 @@ def update_windows(windows, renderables, ball_pos, should_block=False):
     if should_block:
         return list(
             map(
-                lambda (chan, info): chan.recv(),
+                lambda (chan, info): consume_channel_buffer(chan),
                 windows,
             )
         )
     else:
         return list(
             map(
-                lambda chan: try_recv(chan[0]),
+                lambda chan: try_recv(chan[0], consume=True),
                 windows,
             )
         )
@@ -384,6 +455,7 @@ def rolling_average(average, current, multiplier=0.1):
     :param average:    The existing average
     :param current:    The latest value
     :param multiplier: The amount to change the average with each new value
+    :return:           The new average
     """
     return average + (current - average) * multiplier
 
@@ -408,16 +480,19 @@ def run_game(last_score, highscore, options=options()):
 
     frame_length = 1.0 / options.target_fps
     paddle_width = options.paddle_size[0]
+    pause_time = 3
 
-    # TODO: extract this out to Options, with the default being taken from
-    #       `get_width_height`.
-    display_size = get_width_height()
+    display_size = options.display_size
     ball_pos = display_size[0] // 2, display_size[1] // 2
     ball_dir = 1, 1
     pad_window_size = paddle_width * 3, display_size[1]
 
     chans, procs = unzip(
-        mk_windows(display_size, pad_window_size, options=options)
+        mk_windows(
+            display_size,
+            pad_window_size,
+            options=options,
+        )
     )
 
     window_infos = list(repeat(None, len(chans)))
@@ -443,40 +518,47 @@ def run_game(last_score, highscore, options=options()):
         while dt > 0:
             step_dt = min(dt, frame_length)
 
-            ball_speed = (
-                options.initial_ball_speed +
-                score * options.ball_speed_score_multiplier
-            )
+            if pause_time is None:
+                ball_speed = (
+                    options.initial_ball_speed +
+                    score * options.ball_speed_score_multiplier
+                )
 
-            ball_pos, ball_dir, inc_score = handle_ball_physics(
-                position=ball_pos,
-                speed=ball_speed,
-                direction=ball_dir,
-                dt=step_dt,
-                play_area=ball_area_rect,
-            )
+                ball_pos, ball_dir, inc_score = handle_ball_physics(
+                    position=ball_pos,
+                    speed=ball_speed,
+                    direction=ball_dir,
+                    dt=step_dt,
+                    play_area=ball_area_rect,
+                )
 
-            if inc_score:
-                score += 1
+                if inc_score:
+                    score += 1
+            else:
+                pause_time -= step_dt
 
-            renderables = mk_renderables(
-                ball_pos=ball_pos,
-                score=score,
-                highscore=highscore,
-                last_score=last_score,
-                display_size=display_size,
-                options=options,
-                fps=int(round(avg_fps)),
-            )
-
-            msgs = update_windows(
-                windows=zip(chans, window_infos),
-                renderables=renderables,
-                ball_pos=ball_pos,
-                should_block=first_iteration,
-            )
+                if pause_time <= 0:
+                    pause_time = None
 
             dt -= frame_length
+
+        renderables = mk_renderables(
+            ball_pos=ball_pos,
+            score=score,
+            highscore=highscore,
+            last_score=last_score,
+            display_size=display_size,
+            options=options,
+            fps=int(round(avg_fps)),
+            time_left=pause_time,
+        )
+
+        msgs = update_windows(
+            windows=zip(chans, window_infos),
+            renderables=renderables,
+            ball_pos=ball_pos,
+            should_block=first_iteration,
+        )
 
         window_infos = map(
             lambda (m, last): (
@@ -487,7 +569,10 @@ def run_game(last_score, highscore, options=options()):
             zip(msgs, window_infos),
         )
 
-        game_lost = not physics.any_contains(
+        # Don't check if game is lost if the game hasn't started yet - this is
+        # mostly so you don't get stuck in an infinite loop if the ball doesn't
+        # spawn in a window for whatever reason
+        game_lost = pause_time is None and not physics.any_contains(
             inner=ball_pos,
             outers=map(
                 lambda info: (info.x, info.y, info.width, info.height),
@@ -521,6 +606,42 @@ def run_game(last_score, highscore, options=options()):
         first_iteration = False
 
 
+def typed_tuple(typ, n=None):
+    """
+    Makes a function turning a string into a typed tuple of elements.
+
+    :param typ: The type of the elements
+    :param n:   The number of elements in the tuple (or None if it can be any
+                length)
+    :return:    A function converting a string to a tuple
+    """
+    def typed_tuple_inner(s):
+        split = s.split(',')
+
+        if n is not None:
+            assert len(split) == n
+
+        return tuple(map(typ, split))
+
+    return typed_tuple_inner
+
+
+def args_to_options_dict_elements(flagdefs):
+    def args_to_dict_inner(arg):
+        name, val = arg
+
+        for flagdef in flagdefs:
+            if (
+                name == '-{}'.format(flagdef.short_flag) or
+                name == '--{}'.format(flagdef.long_flag)
+            ):
+                return flagdef.field_name, flagdef.field_type(val)
+
+        return None
+
+    return args_to_dict_inner
+
+
 if __name__ == '__main__':
     CmdFlags = namedtuple(
         'CmdFlags',
@@ -542,6 +663,10 @@ if __name__ == '__main__':
             ),
         ),
         CmdFlags(
+            'z', 'window_size', 'movable_window_size', typed_tuple(int, n=2),
+            'Set the size of the movable game windows (default (300, 300))'
+        ),
+        CmdFlags(
             's', 'speed', 'ball_speed', int,
             'Set initial ball speed (default {})'.format(
                 DEFAULT_INITIAL_BALL_SPEED
@@ -561,22 +686,11 @@ if __name__ == '__main__':
                 DEFAULT_SCOREFILE_PATH
             )
         ),
+        CmdFlags(
+            's', 'displaysize', 'display_size', typed_tuple(int, n=2),
+            'Set the display size of the game - if not set, will be inferred'
+        ),
     ]
-
-    def args_to_options_dict_elements(flagdefs):
-        def args_to_dict_inner(arg):
-            name, val = arg
-
-            for flagdef in flagdefs:
-                if (
-                    name == '-{}'.format(flagdef.short_flag) or
-                    name == '--{}'.format(flagdef.long_flag)
-                ):
-                    return flagdef.field_name, flagdef.field_type(val)
-
-            return None
-
-        return args_to_dict_inner
 
     docstring = (
         'Possible options:\n' +

@@ -10,14 +10,24 @@ from collections import namedtuple
 
 Message = namedtuple('Message', ('type', 'info'))
 
-# TODO: String idents are just for debugging, convert these to `gen_ident`
-#       function that returns an opaque integer (can't use opaque object, see
-#       note)
+# TODO: String idents are just for debugging, maybe convert these to
+#       `gen_ident` function that returns an opaque integer (can't use opaque
+#       object, see note)
 QUIT = 'quit'
 RENDER = 'render'
 FREEZE = 'freeze'
 UNFREEZE = 'unfreeze'
 CLIENT_STATE = 'client_state'
+
+
+# TODO: Should this go here? This file doesn't otherwise know anything about
+#       channels
+def consume_channel_buffer(chan):
+    out = chan.recv()
+    while chan.poll():
+        out = chan.recv()
+
+    return out
 
 
 def client_state(info):

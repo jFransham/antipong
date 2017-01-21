@@ -17,10 +17,8 @@ def is_windows():
     return os.name == 'nt'
 
 # NOTE: We assume that handle is a HWND on Windows, and an X11 Xid otherwise
-#       (sorry, Wayland). Handles aren't passed between processes so it doesn't
-#       matter if the subprocesses are run on different OSes or windowing
-#       systems (not that that would happen anyway).
-
+#       (sorry, Wayland). This means that this code will probably not work on
+#       macOS, although I haven't tried it.
 if is_windows():
     from .windows import get_win_info, set_translation
 else:
